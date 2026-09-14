@@ -7,9 +7,9 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// ================================
-// GOOGLE OAUTH CONFIGURATION
-// ================================
+// ==========================================
+// GOOGLE / YOUTUBE OAUTH CONFIGURATION
+// ==========================================
 
 const CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
 const CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
@@ -24,12 +24,15 @@ const oauth2Client = new google.auth.OAuth2(
   REDIRECT_URI
 );
 
-// Temporary stream storage
+// ==========================================
+// TEMPORARY STREAM STORAGE
+// ==========================================
+
 let streams = [];
 
-// ================================
-// HOME API
-// ================================
+// ==========================================
+// HOME
+// ==========================================
 
 app.get("/", (req, res) => {
   res.json({
@@ -39,9 +42,9 @@ app.get("/", (req, res) => {
   });
 });
 
-// ================================
+// ==========================================
 // API STATUS
-// ================================
+// ==========================================
 
 app.get("/api/status", (req, res) => {
   res.json({
@@ -51,26 +54,44 @@ app.get("/api/status", (req, res) => {
   });
 });
 
-// ================================
+// ==========================================
 // YOUTUBE LOGIN
-// ================================
+// ==========================================
 
 app.get("/auth/youtube", (req, res) => {
-  const authUrl = oauth2Client.generateAuthUrl({
-    access_type: "offline",
-    prompt: "consent",
-    scope: [
-      "https://www.googleapis.com/auth/youtube",
-      "https://www.googleapis.com/auth/youtube.force-ssl"
-    ]
-  });
+  try {
+    if (!CLIENT_ID || !CLIENT_SECRET) {
+      return res.status(500).json({
+        success: false,
+        message: "Google OAuth environment variables are missing"
+      });
+    }
 
-  res.redirect(authUrl);
+    const authUrl = oauth2Client.generateAuthUrl({
+      access_type: "offline",
+      prompt: "consent",
+      scope: [
+        "https://www.googleapis.com/auth/youtube",
+        "https://www.googleapis.com/auth/youtube.force-ssl"
+      ]
+    });
+
+    res.redirect(authUrl);
+
+  } catch (error) {
+    console.error(error);
+
+    res.status(500).json({
+      success: false,
+      message: "Unable to start YouTube authentication",
+      error: error.message
+    });
+  }
 });
 
-// ================================
+// ==========================================
 // YOUTUBE CALLBACK
-// ================================
+// ==========================================
 
 app.get("/auth/youtube/callback", async (req, res) => {
   try {
@@ -79,7 +100,7 @@ app.get("/auth/youtube/callback", async (req, res) => {
     if (!code) {
       return res.status(400).json({
         success: false,
-        message: "Authorization code not received"
+        message: "Authorization code not received from Google"
       });
     }
 
@@ -92,14 +113,12 @@ app.get("/auth/youtube/callback", async (req, res) => {
       auth: oauth2Client
     });
 
-    const channelResponse = await youtube.channels.list({
+    const response = await youtube.channels.list({
       part: ["snippet"],
       mine: true
     });
 
-    const channel =
-      channelResponse.data.items &&
-      channelResponse.data.items[0];
+    const channel = response.data.items?.[0];
 
     res.json({
       success: true,
@@ -107,15 +126,15 @@ app.get("/auth/youtube/callback", async (req, res) => {
       channel: channel
         ? {
             id: channel.id,
-            title: channel.snippet.title,
+            title: channel.snippet?.title,
             thumbnail:
-              channel.snippet.thumbnails?.default?.url || null
+              channel.snippet?.thumbnails?.default?.url || null
           }
         : null
     });
 
   } catch (error) {
-    console.error("YouTube OAuth Error:", error.message);
+    console.error("YouTube OAuth Error:", error);
 
     res.status(500).json({
       success: false,
@@ -125,9 +144,9 @@ app.get("/auth/youtube/callback", async (req, res) => {
   }
 });
 
-// ================================
+// ==========================================
 // CREATE STREAM
-// ================================
+// ==========================================
 
 app.post("/api/stream/create", (req, res) => {
   const {
@@ -139,7 +158,7 @@ app.post("/api/stream/create", (req, res) => {
     bitrate
   } = req.body;
 
-  if (!title) {
+  if (!title || title.trim() === "") {
     return res.status(400).json({
       success: false,
       message: "Stream title is required"
@@ -148,12 +167,12 @@ app.post("/api/stream/create", (req, res) => {
 
   const newStream = {
     id: Date.now().toString(),
-    title,
+    title: title.trim(),
     description: description || "",
     platform: platform || "YouTube",
     resolution: resolution || "720p",
-    fps: fps || 30,
-    bitrate: bitrate || 2500,
+    fps: Number(fps) || 30,
+    bitrate: Number(bitrate) || 2500,
     status: "created",
     createdAt: new Date().toISOString()
   };
@@ -167,9 +186,9 @@ app.post("/api/stream/create", (req, res) => {
   });
 });
 
-// ================================
+// ==========================================
 // GET ALL STREAMS
-// ================================
+// ==========================================
 
 app.get("/api/streams", (req, res) => {
   res.json({
@@ -179,13 +198,13 @@ app.get("/api/streams", (req, res) => {
   });
 });
 
-// ================================
+// ==========================================
 // GET SINGLE STREAM
-// ================================
+// ==========================================
 
 app.get("/api/stream/:id", (req, res) => {
   const stream = streams.find(
-    item => item.id === req.params.id
+    (item) => item.id === req.params.id
   );
 
   if (!stream) {
@@ -201,13 +220,13 @@ app.get("/api/stream/:id", (req, res) => {
   });
 });
 
-// ================================
+// ==========================================
 // START STREAM
-// ================================
+// ==========================================
 
 app.post("/api/stream/:id/start", (req, res) => {
   const stream = streams.find(
-    item => item.id === req.params.id
+    (item) => item.id === req.params.id
   );
 
   if (!stream) {
@@ -227,13 +246,13 @@ app.post("/api/stream/:id/start", (req, res) => {
   });
 });
 
-// ================================
+// ==========================================
 // STOP STREAM
-// ================================
+// ==========================================
 
 app.post("/api/stream/:id/stop", (req, res) => {
   const stream = streams.find(
-    item => item.id === req.params.id
+    (item) => item.id === req.params.id
   );
 
   if (!stream) {
@@ -253,12 +272,37 @@ app.post("/api/stream/:id/stop", (req, res) => {
   });
 });
 
-// ================================
-// SERVER START
-// ================================
+// ==========================================
+// DELETE STREAM
+// ==========================================
+
+app.delete("/api/stream/:id", (req, res) => {
+  const index = streams.findIndex(
+    (item) => item.id === req.params.id
+  );
+
+  if (index === -1) {
+    return res.status(404).json({
+      success: false,
+      message: "Stream not found"
+    });
+  }
+
+  const deletedStream = streams.splice(index, 1);
+
+  res.json({
+    success: true,
+    message: "Stream deleted successfully",
+    stream: deletedStream[0]
+  });
+});
+
+// ==========================================
+// START SERVER
+// ==========================================
 
 const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, () => {
-  console.log(`FLIZSTREAM API running on port ${PORT}`);
+  console.log(`🚀 FLIZSTREAM API running on port ${PORT}`);
 });
