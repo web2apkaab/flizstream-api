@@ -4,25 +4,33 @@ const { google } = require("googleapis");
 
 const app = express();
 
+// =====================================
+// MIDDLEWARE
+// =====================================
+
 app.use(cors());
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
-// ==========================================
+// =====================================
 // CONFIGURATION
-// ==========================================
+// =====================================
 
 const PORT = process.env.PORT || 3000;
 
 const CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
 const CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
 
+// IMPORTANT:
+// Google Cloud Console me bhi EXACT yehi URL hona chahiye
+
 const REDIRECT_URI =
   process.env.GOOGLE_REDIRECT_URI ||
   "https://flizstream-api.onrender.com/auth/google/callback";
 
-// ==========================================
-// GOOGLE OAUTH CLIENT
-// ==========================================
+// =====================================
+// OAUTH CLIENT
+// =====================================
 
 const oauth2Client = new google.auth.OAuth2(
   CLIENT_ID,
@@ -30,797 +38,764 @@ const oauth2Client = new google.auth.OAuth2(
   REDIRECT_URI
 );
 
-// ==========================================
-// TEMPORARY TOKEN STORAGE
-// NOTE:
-// Render restart होने पर ये memory reset हो जाएगी.
-// बाद में database जोड़ सकते हैं.
-// ==========================================
+// =====================================
+// TEMPORARY STORAGE
+// =====================================
 
-let savedTokens = null;
-let connectedChannel = null;
+let connectedAccount = null;
 
-// ==========================================
-// YOUTUBE CLIENT FUNCTION
-// ==========================================
+let streams = [];
 
-function getYouTubeClient() {
-  if (!savedTokens) {
-    throw new Error("YouTube account is not connected");
-  }
-
-  oauth2Client.setCredentials(savedTokens);
-
-  return google.youtube({
-    version: "v3",
-    auth: oauth2Client
-  });
-}
-
-// ==========================================
+// =====================================
 // HOME
-// ==========================================
+// =====================================
 
 app.get("/", (req, res) => {
+
   res.json({
     success: true,
     message: "FLIZSTREAM API is running successfully!",
-    status: "online"
+    status: "online",
+
+    endpoints: {
+
+      status: "/api/status",
+
+      googleLogin: "/auth/google",
+
+      youtubeLogin: "/auth/youtube",
+
+      connectedAccount: "/api/account",
+
+      streams: "/api/streams"
+
+    }
+
   });
+
 });
 
-// ==========================================
+// =====================================
 // API STATUS
-// ==========================================
+// =====================================
 
 app.get("/api/status", (req, res) => {
+
   res.json({
+
     success: true,
+
     status: "online",
-    youtubeConnected: !!savedTokens
+
+    app: "FLIZSTREAM",
+
+    message: "FLIZSTREAM API is working successfully!"
+
   });
+
 });
 
-// ==========================================
-// GOOGLE / YOUTUBE LOGIN
-// ==========================================
+// =====================================
+// GOOGLE LOGIN
+// =====================================
 
 app.get("/auth/google", (req, res) => {
+
   try {
+
     if (!CLIENT_ID || !CLIENT_SECRET) {
+
       return res.status(500).json({
+
         success: false,
-        message: "Google OAuth credentials are missing"
+
+        message:
+          "GOOGLE_CLIENT_ID or GOOGLE_CLIENT_SECRET is missing in Render Environment Variables"
+
       });
+
     }
 
     const authUrl = oauth2Client.generateAuthUrl({
+
       access_type: "offline",
+
       prompt: "consent",
 
+      include_granted_scopes: true,
+
       scope: [
+
         "https://www.googleapis.com/auth/youtube",
+
         "https://www.googleapis.com/auth/youtube.force-ssl"
+
       ]
+
     });
 
     res.redirect(authUrl);
 
   } catch (error) {
 
-    console.error("OAuth Error:", error);
+    console.error("Google Login Error:", error);
 
     res.status(500).json({
+
       success: false,
+
       message: "Unable to start Google authentication",
+
       error: error.message
+
     });
+
   }
+
 });
 
-// ==========================================
+// =====================================
+// YOUTUBE LOGIN
+// =====================================
+
+app.get("/auth/youtube", (req, res) => {
+
+  try {
+
+    if (!CLIENT_ID || !CLIENT_SECRET) {
+
+      return res.status(500).json({
+
+        success: false,
+
+        message:
+          "Google OAuth Environment Variables are missing"
+
+      });
+
+    }
+
+    const authUrl = oauth2Client.generateAuthUrl({
+
+      access_type: "offline",
+
+      prompt: "consent",
+
+      include_granted_scopes: true,
+
+      scope: [
+
+        "https://www.googleapis.com/auth/youtube",
+
+        "https://www.googleapis.com/auth/youtube.force-ssl"
+
+      ]
+
+    });
+
+    res.redirect(authUrl);
+
+  } catch (error) {
+
+    console.error(error);
+
+    res.status(500).json({
+
+      success: false,
+
+      message: "Unable to start YouTube authentication",
+
+      error: error.message
+
+    });
+
+  }
+
+});
+
+// =====================================
 // GOOGLE CALLBACK
-// ==========================================
+// =====================================
 
 app.get("/auth/google/callback", async (req, res) => {
 
   try {
 
+    // Google Error Check
+
+    if (req.query.error) {
+
+      return res.status(400).send(`
+      
+      <!DOCTYPE html>
+
+      <html>
+
+      <head>
+
+      <title>Authentication Failed</title>
+
+      <style>
+
+      body {
+        background:#08111f;
+        color:white;
+        font-family:Arial;
+        display:flex;
+        justify-content:center;
+        align-items:center;
+        height:100vh;
+        margin:0;
+      }
+
+      .card {
+        background:#243042;
+        padding:40px;
+        border-radius:25px;
+        text-align:center;
+        max-width:500px;
+      }
+
+      h1 {
+        color:#ff5252;
+      }
+
+      </style>
+
+      </head>
+
+      <body>
+
+      <div class="card">
+
+      <h1>Authentication Failed</h1>
+
+      <p>${req.query.error}</p>
+
+      </div>
+
+      </body>
+
+      </html>
+
+      `);
+
+    }
+
+    // Authorization Code
+
     const code = req.query.code;
 
     if (!code) {
+
       return res.status(400).json({
+
         success: false,
+
         message: "Authorization code not received"
+
       });
+
     }
 
-    // Exchange code for tokens
-    const { tokens } = await oauth2Client.getToken(code);
+    // Get Tokens
 
-    savedTokens = tokens;
+    const { tokens } = await oauth2Client.getToken(code);
 
     oauth2Client.setCredentials(tokens);
 
+    // =====================================
+    // YOUTUBE API
+    // =====================================
+
     const youtube = google.youtube({
+
       version: "v3",
+
       auth: oauth2Client
+
     });
 
-    // ==========================================
+    // =====================================
     // GET CONNECTED CHANNEL
-    // ==========================================
+    // =====================================
 
-    const channelResponse = await youtube.channels.list({
-      part: [
-        "snippet",
-        "statistics",
-        "status",
-        "contentDetails"
-      ],
-      mine: true
-    });
+    const channelResponse =
+      await youtube.channels.list({
 
-    const channels = channelResponse.data.items || [];
+        part: [
 
-    if (channels.length === 0) {
+          "snippet",
+
+          "statistics",
+
+          "contentDetails"
+
+        ],
+
+        mine: true
+
+      });
+
+    const channels = channelResponse.data.items;
+
+    // =====================================
+    // NO CHANNEL FOUND
+    // =====================================
+
+    if (!channels || channels.length === 0) {
+
+      connectedAccount = {
+
+        connected: true,
+
+        channelFound: false,
+
+        tokens: tokens,
+
+        connectedAt: new Date().toISOString()
+
+      };
 
       return res.send(`
-        <!DOCTYPE html>
-        <html>
-        <head>
-          <title>FLIZSTREAM</title>
 
-          <style>
+      <!DOCTYPE html>
 
-            body {
-              margin: 0;
-              background: #111827;
-              color: white;
-              font-family: Arial;
-              display: flex;
-              justify-content: center;
-              align-items: center;
-              height: 100vh;
-            }
+      <html>
 
-            .card {
-              background: #293548;
-              padding: 40px;
-              border-radius: 25px;
-              text-align: center;
-              max-width: 500px;
-            }
+      <head>
 
-            h1 {
-              color: #ff5252;
-            }
+      <meta name="viewport"
+      content="width=device-width, initial-scale=1.0">
 
-            button {
-              padding: 15px 35px;
-              border: none;
-              border-radius: 15px;
-              background: #ff3d3d;
-              color: white;
-              font-size: 18px;
-              cursor: pointer;
-            }
+      <title>Connected Successfully</title>
 
-          </style>
+      <style>
 
-        </head>
+      * {
+        box-sizing:border-box;
+      }
 
-        <body>
+      body {
 
-          <div class="card">
+        margin:0;
 
-            <h1>⚠️ No YouTube Channel Found</h1>
+        min-height:100vh;
 
-            <p>
-              Google account connected successfully,
-              but no YouTube channel was found.
-            </p>
+        background:#08111f;
 
-            <button onclick="window.close()">
-              Close
-            </button>
+        font-family:Arial, sans-serif;
 
-          </div>
+        display:flex;
 
-        </body>
-        </html>
+        justify-content:center;
+
+        align-items:center;
+
+        color:white;
+
+        padding:20px;
+
+      }
+
+      .card {
+
+        width:100%;
+
+        max-width:600px;
+
+        background:#2b3748;
+
+        border-radius:30px;
+
+        padding:50px 25px;
+
+        text-align:center;
+
+      }
+
+      .icon {
+
+        width:120px;
+
+        height:120px;
+
+        background:#64a52a;
+
+        border-radius:25px;
+
+        display:flex;
+
+        justify-content:center;
+
+        align-items:center;
+
+        font-size:70px;
+
+        margin:auto;
+
+      }
+
+      h1 {
+
+        color:#5bdd88;
+
+        font-size:42px;
+
+        margin-top:35px;
+
+      }
+
+      p {
+
+        color:#d0d6df;
+
+        font-size:20px;
+
+        line-height:1.6;
+
+      }
+
+      button {
+
+        margin-top:30px;
+
+        border:none;
+
+        padding:20px 55px;
+
+        border-radius:20px;
+
+        font-size:22px;
+
+        background:#ff3d42;
+
+        color:white;
+
+      }
+
+      </style>
+
+      </head>
+
+      <body>
+
+      <div class="card">
+
+      <div class="icon">✓</div>
+
+      <h1>Successfully Connected!</h1>
+
+      <p>
+
+      Your Google account has been connected successfully with FLIZSTREAM.
+
+      </p>
+
+      <button onclick="window.close()">
+
+      Close
+
+      </button>
+
+      </div>
+
+      </body>
+
+      </html>
+
       `);
+
     }
+
+    // =====================================
+    // CHANNEL DETAILS
+    // =====================================
 
     const channel = channels[0];
 
-    connectedChannel = {
+    const channelId = channel.id;
 
-      id: channel.id,
+    const channelName =
+      channel.snippet.title;
 
-      title: channel.snippet?.title || "YouTube Channel",
+    const description =
+      channel.snippet.description || "";
 
-      description:
-        channel.snippet?.description || "",
+    const thumbnail =
+      channel.snippet.thumbnails?.high?.url ||
+      channel.snippet.thumbnails?.medium?.url ||
+      channel.snippet.thumbnails?.default?.url ||
+      "";
 
-      thumbnail:
-        channel.snippet?.thumbnails?.high?.url ||
-        channel.snippet?.thumbnails?.default?.url ||
-        "",
+    // =====================================
+    // SAVE ACCOUNT TEMPORARILY
+    // =====================================
 
-      subscribers:
-        channel.statistics?.subscriberCount || "0",
+    connectedAccount = {
 
-      videos:
-        channel.statistics?.videoCount || "0"
+      connected: true,
+
+      channelFound: true,
+
+      channelId: channelId,
+
+      channelName: channelName,
+
+      description: description,
+
+      thumbnail: thumbnail,
+
+      statistics: channel.statistics,
+
+      tokens: tokens,
+
+      connectedAt: new Date().toISOString()
 
     };
 
-    // ==========================================
+    // =====================================
     // SUCCESS PAGE
-    // ==========================================
+    // =====================================
 
     res.send(`
-<!DOCTYPE html>
 
-<html>
+    <!DOCTYPE html>
 
-<head>
+    <html>
 
-<title>FLIZSTREAM Connected</title>
+    <head>
 
-<meta name="viewport"
-content="width=device-width, initial-scale=1.0">
+    <meta name="viewport"
+    content="width=device-width, initial-scale=1.0">
 
-<style>
+    <title>FLIZSTREAM Connected</title>
 
-* {
-  box-sizing: border-box;
-}
+    <style>
 
-body {
+    * {
 
-  margin: 0;
+      box-sizing:border-box;
 
-  min-height: 100vh;
+    }
 
-  background:
-  linear-gradient(
-    135deg,
-    #07111f,
-    #111827
-  );
+    body {
 
-  font-family:
-  Arial,
-  sans-serif;
+      margin:0;
 
-  display: flex;
+      min-height:100vh;
 
-  align-items: center;
+      background:#08111f;
 
-  justify-content: center;
+      font-family:Arial, sans-serif;
 
-  color: white;
+      display:flex;
 
-}
+      justify-content:center;
 
-.card {
+      align-items:center;
 
-  width: 90%;
+      padding:20px;
 
-  max-width: 600px;
+      color:white;
 
-  background: #334155;
+    }
 
-  border-radius: 35px;
+    .card {
 
-  padding: 45px 25px;
+      width:100%;
 
-  text-align: center;
+      max-width:620px;
 
-  box-shadow:
-  0 20px 70px rgba(0,0,0,.5);
+      background:#2d394a;
 
-}
+      border-radius:35px;
 
-.check {
+      padding:45px 25px;
 
-  width: 120px;
+      text-align:center;
 
-  height: 120px;
+      box-shadow:
+      0 10px 40px rgba(0,0,0,0.4);
 
-  margin: auto;
+    }
 
-  border-radius: 30px;
+    .success-icon {
 
-  background: #65a30d;
+      width:120px;
 
-  display: flex;
+      height:120px;
 
-  align-items: center;
+      background:#63a52a;
 
-  justify-content: center;
+      border-radius:30px;
 
-  font-size: 70px;
+      display:flex;
 
-}
+      align-items:center;
 
-h1 {
+      justify-content:center;
 
-  color: #5ee38b;
+      font-size:70px;
 
-  font-size: 42px;
+      margin:auto;
 
-  margin-top: 35px;
+    }
 
-}
+    h1 {
 
-.channel-image {
+      color:#63dc91;
 
-  width: 130px;
+      font-size:42px;
 
-  height: 130px;
+      margin:35px 0;
 
-  border-radius: 50%;
+    }
 
-  object-fit: cover;
+    .profile {
 
-  margin-top: 25px;
+      width:150px;
 
-}
+      height:150px;
 
-.channel-name {
+      border-radius:50%;
 
-  font-size: 32px;
+      object-fit:cover;
 
-  font-weight: bold;
+      margin:10px auto 25px;
 
-  margin-top: 20px;
+      display:block;
 
-}
+      background:#555;
 
-.message {
+    }
 
-  font-size: 22px;
+    .channel {
 
-  color: #d1d5db;
+      font-size:32px;
 
-  line-height: 1.6;
+      font-weight:bold;
 
-  margin-top: 30px;
+      margin-bottom:25px;
 
-}
+    }
 
-.channel-id {
+    .message {
 
-  margin-top: 30px;
+      color:#d1d7df;
 
-  font-size: 18px;
+      font-size:21px;
 
-  color: #cbd5e1;
+      line-height:1.6;
 
-  word-break: break-all;
+    }
 
-}
+    .channel-id {
 
-button {
+      margin-top:30px;
 
-  margin-top: 40px;
+      color:#bfc7d0;
 
-  padding: 18px 65px;
+      font-size:18px;
 
-  border: none;
+      word-break:break-all;
 
-  border-radius: 22px;
+    }
 
-  background: #ff4040;
+    button {
 
-  color: white;
+      margin-top:35px;
 
-  font-size: 25px;
+      background:#ff3d43;
 
-  cursor: pointer;
+      border:none;
 
-}
+      color:white;
 
-</style>
+      padding:20px 70px;
 
-</head>
+      font-size:25px;
 
-<body>
+      border-radius:22px;
 
-<div class="card">
+      cursor:pointer;
 
-<div class="check">
-✓
-</div>
+    }
 
-<h1>
-Successfully<br>
-Connected!
-</h1>
+    </style>
 
-${
-connectedChannel.thumbnail
-? `
-<img
-class="channel-image"
-src="${connectedChannel.thumbnail}"
->
-`
-: ""
-}
+    </head>
 
-<div class="channel-name">
+    <body>
 
-${connectedChannel.title}
+    <div class="card">
 
-</div>
+    <div class="success-icon">
 
-<div class="message">
+    ✓
 
-Your Google and YouTube account<br>
+    </div>
 
-has been connected successfully with
+    <h1>
 
-<b>FLIZSTREAM.</b>
+    Successfully Connected!
 
-</div>
+    </h1>
 
-<div class="channel-id">
+    ${thumbnail
+      ? `<img class="profile" src="${thumbnail}" />`
+      : ""
+    }
 
-Channel ID:<br>
+    <div class="channel">
 
-${connectedChannel.id}
+    ${channelName}
 
-</div>
+    </div>
 
-<button onclick="window.close()">
+    <div class="message">
 
-Close
+    Your Google and YouTube account has been connected successfully with FLIZSTREAM.
 
-</button>
+    </div>
 
-</div>
+    <div class="channel-id">
 
-</body>
+    Channel ID:<br>
 
-</html>
+    ${channelId}
+
+    </div>
+
+    <button onclick="window.close()">
+
+    Close
+
+    </button>
+
+    </div>
+
+    </body>
+
+    </html>
+
     `);
 
   } catch (error) {
 
-    console.error("Callback Error:", error);
-
-    res.status(500).json({
-      success: false,
-      message: "Failed to connect YouTube account",
-      error:
-        error.response?.data?.error?.message ||
-        error.message
-    });
-
-  }
-
-});
-
-// ==========================================
-// OLD CALLBACK SUPPORT
-// ==========================================
-
-app.get("/auth/youtube/callback", (req, res) => {
-
-  const query = new URLSearchParams(req.query).toString();
-
-  res.redirect(
-    "/auth/google/callback?" + query
-  );
-
-});
-
-// ==========================================
-// CONNECTED CHANNEL DETAILS
-// ==========================================
-
-app.get("/api/channel", async (req, res) => {
-
-  try {
-
-    if (!connectedChannel) {
-
-      return res.status(401).json({
-        success: false,
-        message: "No YouTube channel connected"
-      });
-
-    }
-
-    res.json({
-      success: true,
-      channel: connectedChannel
-    });
-
-  } catch (error) {
-
-    res.status(500).json({
-      success: false,
-      message: error.message
-    });
-
-  }
-
-});
-
-// ==========================================
-// CREATE LIVE STREAM
-// ==========================================
-
-app.post("/api/live/create", async (req, res) => {
-
-  try {
-
-    const {
-      title,
-      description,
-      privacyStatus,
-      resolution,
-      frameRate
-    } = req.body;
-
-    if (!title) {
-
-      return res.status(400).json({
-        success: false,
-        message: "Stream title is required"
-      });
-
-    }
-
-    const youtube = getYouTubeClient();
-
-    // ==========================================
-    // CREATE LIVE STREAM
-    // ==========================================
-
-    const streamResponse =
-      await youtube.liveStreams.insert({
-
-        part: [
-          "snippet",
-          "cdn",
-          "status"
-        ],
-
-        requestBody: {
-
-          snippet: {
-
-            title: title,
-
-            description:
-              description || "Live stream created using FLIZSTREAM"
-
-          },
-
-          cdn: {
-
-            frameRate:
-              frameRate || "30fps",
-
-            ingestionType:
-              "rtmp",
-
-            resolution:
-              resolution || "720p"
-
-          },
-
-          contentDetails: {
-
-            isReusable: true
-
-          }
-
-        }
-
-      });
-
-    const stream = streamResponse.data;
-
-    // ==========================================
-    // CREATE LIVE BROADCAST
-    // ==========================================
-
-    const startTime =
-      new Date(Date.now() + 60 * 1000).toISOString();
-
-    const broadcastResponse =
-      await youtube.liveBroadcasts.insert({
-
-        part: [
-          "snippet",
-          "status",
-          "contentDetails"
-        ],
-
-        requestBody: {
-
-          snippet: {
-
-            title: title,
-
-            description:
-              description ||
-              "Live stream created using FLIZSTREAM",
-
-            scheduledStartTime:
-              startTime
-
-          },
-
-          status: {
-
-            privacyStatus:
-              privacyStatus || "public",
-
-            selfDeclaredMadeForKids:
-              false
-
-          },
-
-          contentDetails: {
-
-            enableAutoStart: true,
-
-            enableAutoStop: true,
-
-            enableDvr: true,
-
-            recordFromStart: true
-
-          }
-
-        }
-
-      });
-
-    const broadcast =
-      broadcastResponse.data;
-
-    // ==========================================
-    // BIND STREAM TO BROADCAST
-    // ==========================================
-
-    await youtube.liveBroadcasts.bind({
-
-      part: [
-        "id",
-        "snippet",
-        "contentDetails",
-        "status"
-      ],
-
-      id: broadcast.id,
-
-      streamId: stream.id
-
-    });
-
-    // ==========================================
-    // RESPONSE
-    // ==========================================
-
-    const ingestionInfo =
-      stream.cdn?.ingestionInfo || {};
-
-    res.json({
-
-      success: true,
-
-      message:
-        "YouTube Live Stream created successfully",
-
-      channel:
-        connectedChannel,
-
-      broadcast: {
-
-        id:
-          broadcast.id,
-
-        title:
-          broadcast.snippet?.title,
-
-        status:
-          broadcast.status?.lifeCycleStatus,
-
-        privacy:
-          broadcast.status?.privacyStatus,
-
-        scheduledStartTime:
-          broadcast.snippet?.scheduledStartTime
-
-      },
-
-      stream: {
-
-        id:
-          stream.id,
-
-        title:
-          stream.snippet?.title,
-
-        streamStatus:
-          stream.status?.streamStatus,
-
-        resolution:
-          stream.cdn?.resolution,
-
-        frameRate:
-          stream.cdn?.frameRate
-
-      },
-
-      rtmp: {
-
-        ingestionAddress:
-          ingestionInfo.ingestionAddress ||
-
-          "",
-
-        streamName:
-          ingestionInfo.streamName ||
-
-          "",
-
-        backupIngestionAddress:
-          ingestionInfo.backupIngestionAddress ||
-
-          "",
-
-        // Complete RTMP URL
-
-        rtmpUrl:
-
-          ingestionInfo.ingestionAddress &&
-
-          ingestionInfo.streamName
-
-          ?
-
-          ingestionInfo.ingestionAddress +
-
-          "/" +
-
-          ingestionInfo.streamName
-
-          :
-
-          ""
-
-      }
-
-    });
-
-  } catch (error) {
-
     console.error(
-      "Create Live Error:",
-      error.response?.data || error
+      "YouTube Connection Error:",
+      error.response?.data || error.message
     );
 
     res.status(500).json({
 
       success: false,
 
-      message:
-        "Failed to create YouTube Live Stream",
+      message: "Failed to connect YouTube account",
 
       error:
-
         error.response?.data?.error?.message ||
-
         error.message
 
     });
@@ -829,38 +804,90 @@ app.post("/api/live/create", async (req, res) => {
 
 });
 
-// ==========================================
-// LIST LIVE STREAMS
-// ==========================================
+// =====================================
+// YOUTUBE CALLBACK
+// =====================================
 
-app.get("/api/live/streams", async (req, res) => {
+// IMPORTANT:
+// This redirects to the main Google callback
+
+app.get("/auth/youtube/callback", (req, res) => {
+
+  const queryString =
+    new URLSearchParams(req.query).toString();
+
+  res.redirect(
+    `/auth/google/callback?${queryString}`
+  );
+
+});
+
+// =====================================
+// GET CONNECTED ACCOUNT
+// =====================================
+
+app.get("/api/account", (req, res) => {
+
+  if (!connectedAccount) {
+
+    return res.status(404).json({
+
+      success: false,
+
+      message: "No Google/YouTube account connected"
+
+    });
+
+  }
+
+  res.json({
+
+    success: true,
+
+    account: {
+
+      connected:
+        connectedAccount.connected,
+
+      channelFound:
+        connectedAccount.channelFound,
+
+      channelId:
+        connectedAccount.channelId,
+
+      channelName:
+        connectedAccount.channelName,
+
+      thumbnail:
+        connectedAccount.thumbnail,
+
+      connectedAt:
+        connectedAccount.connectedAt
+
+    }
+
+  });
+
+});
+
+// =====================================
+// DISCONNECT ACCOUNT
+// =====================================
+
+app.post("/api/disconnect", async (req, res) => {
 
   try {
 
-    const youtube =
-      getYouTubeClient();
+    connectedAccount = null;
 
-    const response =
-      await youtube.liveStreams.list({
-
-        part: [
-          "snippet",
-          "cdn",
-          "status"
-        ],
-
-        mine: true,
-
-        maxResults: 50
-
-      });
+    oauth2Client.setCredentials({});
 
     res.json({
 
       success: true,
 
-      streams:
-        response.data.items || []
+      message:
+        "Google and YouTube account disconnected successfully"
 
     });
 
@@ -871,13 +898,7 @@ app.get("/api/live/streams", async (req, res) => {
       success: false,
 
       message:
-        "Failed to get streams",
-
-      error:
-
-        error.response?.data?.error?.message ||
-
-        error.message
+        "Failed to disconnect account"
 
     });
 
@@ -885,190 +906,242 @@ app.get("/api/live/streams", async (req, res) => {
 
 });
 
-// ==========================================
-// LIST LIVE BROADCASTS
-// ==========================================
+// =====================================
+// CREATE STREAM
+// =====================================
 
-app.get("/api/live/broadcasts", async (req, res) => {
+app.post("/api/streams", (req, res) => {
 
-  try {
+  const {
 
-    const youtube =
-      getYouTubeClient();
+    title,
 
-    const response =
-      await youtube.liveBroadcasts.list({
+    description,
 
-        part: [
-          "snippet",
-          "status",
-          "contentDetails"
-        ],
+    streamKey,
 
-        mine: true,
+    platform
 
-        maxResults: 50,
+  } = req.body;
 
-        broadcastStatus:
-          "all"
+  if (!title) {
 
-      });
+    return res.status(400).json({
 
-    res.json({
+      success: false,
 
-      success: true,
-
-      broadcasts:
-        response.data.items || []
+      message: "Stream title is required"
 
     });
 
-  } catch (error) {
+  }
 
-    res.status(500).json({
+  const newStream = {
+
+    id: Date.now().toString(),
+
+    title:
+
+      title,
+
+    description:
+
+      description || "",
+
+    streamKey:
+
+      streamKey || "",
+
+    platform:
+
+      platform || "YouTube",
+
+    status:
+
+      "created",
+
+    createdAt:
+
+      new Date().toISOString()
+
+  };
+
+  streams.push(newStream);
+
+  res.json({
+
+    success: true,
+
+    message:
+      "Stream created successfully",
+
+    stream:
+
+      newStream
+
+  });
+
+});
+
+// =====================================
+// GET ALL STREAMS
+// =====================================
+
+app.get("/api/streams", (req, res) => {
+
+  res.json({
+
+    success: true,
+
+    total:
+
+      streams.length,
+
+    streams:
+
+      streams
+
+  });
+
+});
+
+// =====================================
+// GET SINGLE STREAM
+// =====================================
+
+app.get("/api/streams/:id", (req, res) => {
+
+  const stream =
+    streams.find(
+
+      item => item.id === req.params.id
+
+    );
+
+  if (!stream) {
+
+    return res.status(404).json({
 
       success: false,
 
       message:
-        "Failed to get broadcasts",
-
-      error:
-
-        error.response?.data?.error?.message ||
-
-        error.message
+        "Stream not found"
 
     });
 
   }
 
+  res.json({
+
+    success: true,
+
+    stream:
+
+      stream
+
+  });
+
 });
 
-// ==========================================
-// GET SPECIFIC BROADCAST
-// ==========================================
+// =====================================
+// UPDATE STREAM
+// =====================================
 
-app.get(
-  "/api/live/broadcast/:id",
+app.put("/api/streams/:id", (req, res) => {
 
-  async (req, res) => {
+  const index =
+    streams.findIndex(
 
-    try {
+      item => item.id === req.params.id
 
-      const youtube =
-        getYouTubeClient();
+    );
 
-      const response =
-        await youtube.liveBroadcasts.list({
+  if (index === -1) {
 
-          part: [
-            "snippet",
-            "status",
-            "contentDetails"
-          ],
+    return res.status(404).json({
 
-          id:
-            req.params.id
+      success: false,
 
-        });
+      message:
+        "Stream not found"
 
-      res.json({
-
-        success: true,
-
-        broadcast:
-          response.data.items?.[0] || null
-
-      });
-
-    } catch (error) {
-
-      res.status(500).json({
-
-        success: false,
-
-        message:
-          error.message
-
-      });
-
-    }
+    });
 
   }
 
-);
+  streams[index] = {
 
-// ==========================================
-// END LIVE BROADCAST
-// ==========================================
+    ...streams[index],
 
-app.post(
-  "/api/live/end/:id",
+    ...req.body,
 
-  async (req, res) => {
+    updatedAt:
+      new Date().toISOString()
 
-    try {
+  };
 
-      const youtube =
-        getYouTubeClient();
+  res.json({
 
-      const broadcastId =
-        req.params.id;
+    success: true,
 
-      const response =
-        await youtube.liveBroadcasts.transition({
+    message:
+      "Stream updated successfully",
 
-          part: [
-            "snippet",
-            "status"
-          ],
+    stream:
+      streams[index]
 
-          broadcastStatus:
-            "complete",
+  });
 
-          id:
-            broadcastId
+});
 
-        });
+// =====================================
+// DELETE STREAM
+// =====================================
 
-      res.json({
+app.delete("/api/streams/:id", (req, res) => {
 
-        success: true,
+  const index =
+    streams.findIndex(
 
-        message:
-          "Live broadcast ended successfully",
+      item => item.id === req.params.id
 
-        broadcast:
-          response.data
+    );
 
-      });
+  if (index === -1) {
 
-    } catch (error) {
+    return res.status(404).json({
 
-      res.status(500).json({
+      success: false,
 
-        success: false,
+      message:
+        "Stream not found"
 
-        message:
-          "Failed to end broadcast",
-
-        error:
-
-          error.response?.data?.error?.message ||
-
-          error.message
-
-      });
-
-    }
+    });
 
   }
 
-);
+  const deletedStream =
+    streams[index];
 
-// ==========================================
-// 404 HANDLER
-// ==========================================
+  streams.splice(index, 1);
+
+  res.json({
+
+    success: true,
+
+    message:
+      "Stream deleted successfully",
+
+    stream:
+      deletedStream
+
+  });
+
+});
+
+// =====================================
+// 404 ROUTE
+// =====================================
 
 app.use((req, res) => {
 
@@ -1086,9 +1159,9 @@ app.use((req, res) => {
 
 });
 
-// ==========================================
+// =====================================
 // START SERVER
-// ==========================================
+// =====================================
 
 app.listen(PORT, () => {
 
