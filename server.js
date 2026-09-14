@@ -5,10 +5,8 @@ const { google } = require("googleapis");
 const app = express();
 
 // ==========================================
-// BASIC CONFIGURATION
+// MIDDLEWARE
 // ==========================================
-
-const PORT = process.env.PORT || 3000;
 
 app.use(cors());
 app.use(express.json());
@@ -22,7 +20,7 @@ const CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
 
 const REDIRECT_URI =
   process.env.GOOGLE_REDIRECT_URI ||
-  "https://flizstream-api.onrender.com/auth/google/callback";
+  "https://flizstream-api.onrender.com/auth/youtube/callback";
 
 const oauth2Client = new google.auth.OAuth2(
   CLIENT_ID,
@@ -32,18 +30,16 @@ const oauth2Client = new google.auth.OAuth2(
 
 // ==========================================
 // TEMPORARY STORAGE
+// NOTE:
+// Render restart होने पर यह memory reset हो सकती है.
+// बाद में Database जोड़ेंगे.
 // ==========================================
 
-// NOTE:
-// Render restart hone par ye data reset ho jayega.
-// Production ke liye MongoDB / database use karna better hoga.
-
+let connectedUser = null;
 let streams = [];
 
-let connectedYouTubeAccounts = [];
-
 // ==========================================
-// HOME
+// HOME API
 // ==========================================
 
 app.get("/", (req, res) => {
@@ -51,7 +47,13 @@ app.get("/", (req, res) => {
     success: true,
     message: "FLIZSTREAM API is running successfully!",
     app: "FLIZSTREAM",
-    status: "online"
+    version: "1.0.0",
+    endpoints: {
+      status: "/api/status",
+      googleLogin: "/auth/youtube",
+      youtubeChannel: "/api/youtube/channel",
+      connectedAccount: "/api/account"
+    }
   });
 });
 
@@ -63,7 +65,8 @@ app.get("/api/status", (req, res) => {
   res.json({
     success: true,
     status: "online",
-    message: "FLIZSTREAM Streaming API is working"
+    message: "FLIZSTREAM Streaming API is working",
+    googleConnected: connectedUser !== null
   });
 });
 
@@ -71,93 +74,147 @@ app.get("/api/status", (req, res) => {
 // GOOGLE / YOUTUBE LOGIN
 // ==========================================
 
-app.get("/auth/google", (req, res) => {
+app.get("/auth/youtube", (req, res) => {
   try {
+
     if (!CLIENT_ID || !CLIENT_SECRET) {
       return res.status(500).json({
         success: false,
-        message:
-          "Google OAuth environment variables are missing. Please add GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in Render."
+        message: "Google OAuth environment variables are missing",
+        requiredVariables: [
+          "GOOGLE_CLIENT_ID",
+          "GOOGLE_CLIENT_SECRET"
+        ]
       });
     }
 
     const authUrl = oauth2Client.generateAuthUrl({
+
       access_type: "offline",
 
-      // Google se refresh token lene ke liye
       prompt: "consent",
 
       scope: [
-        "openid",
-        "email",
-        "profile",
-
         "https://www.googleapis.com/auth/youtube",
         "https://www.googleapis.com/auth/youtube.force-ssl"
       ]
+
     });
 
     res.redirect(authUrl);
 
   } catch (error) {
+
     console.error("Google Login Error:", error);
 
     res.status(500).json({
       success: false,
-      message: "Unable to start Google authentication",
+      message: "Unable to start YouTube authentication",
       error: error.message
     });
+
   }
 });
 
-// पुराने URL को भी support करेंगे
-app.get("/auth/youtube", (req, res) => {
-  res.redirect("/auth/google");
-});
-
 // ==========================================
-// GOOGLE CALLBACK
+// GOOGLE / YOUTUBE CALLBACK
 // ==========================================
 
-app.get("/auth/google/callback", async (req, res) => {
+app.get("/auth/youtube/callback", async (req, res) => {
+
   try {
-
-    // अगर user ने Google login cancel किया
-    if (req.query.error) {
-      return res.status(400).json({
-        success: false,
-        message: "Google authentication cancelled",
-        error: req.query.error
-      });
-    }
 
     const code = req.query.code;
 
+    const googleError = req.query.error;
+
+    // User denied permission
+    if (googleError) {
+
+      return res.status(400).send(`
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <title>Authentication Failed</title>
+
+          <style>
+            body {
+              margin: 0;
+              background: #111827;
+              color: white;
+              font-family: Arial, sans-serif;
+              display: flex;
+              justify-content: center;
+              align-items: center;
+              min-height: 100vh;
+            }
+
+            .card {
+              background: #1f2937;
+              padding: 40px;
+              border-radius: 20px;
+              text-align: center;
+              max-width: 500px;
+              width: 90%;
+            }
+
+            h1 {
+              color: #ef4444;
+            }
+
+            button {
+              background: #ef4444;
+              border: none;
+              color: white;
+              padding: 14px 30px;
+              border-radius: 10px;
+              font-size: 16px;
+              cursor: pointer;
+            }
+          </style>
+        </head>
+
+        <body>
+
+          <div class="card">
+
+            <h1>❌ Authentication Failed</h1>
+
+            <p>You cancelled or denied Google permission.</p>
+
+            <p>${googleError}</p>
+
+            <br>
+
+            <button onclick="window.location.href='/auth/youtube'">
+              Try Again
+            </button>
+
+          </div>
+
+        </body>
+        </html>
+      `);
+
+    }
+
+    // Authorization code missing
     if (!code) {
+
       return res.status(400).json({
         success: false,
         message: "Authorization code not received from Google"
       });
+
     }
 
-    // Exchange authorization code for tokens
+    // Get Google Tokens
     const { tokens } = await oauth2Client.getToken(code);
 
     oauth2Client.setCredentials(tokens);
 
     // ==========================================
-    // GET GOOGLE USER INFORMATION
-    // ==========================================
-
-    const oauth2 = google.oauth2({
-      version: "v2",
-      auth: oauth2Client
-    });
-
-    const userInfo = await oauth2.userinfo.get();
-
-    // ==========================================
-    // GET YOUTUBE CHANNEL INFORMATION
+    // GET CONNECTED YOUTUBE CHANNEL
     // ==========================================
 
     const youtube = google.youtube({
@@ -165,166 +222,233 @@ app.get("/auth/google/callback", async (req, res) => {
       auth: oauth2Client
     });
 
+    const channelResponse = await youtube.channels.list({
+      part: [
+        "snippet",
+        "statistics"
+      ],
+      mine: true
+    });
+
     let channelData = null;
 
-    try {
-      const channelResponse = await youtube.channels.list({
-        part: [
-          "snippet",
-          "statistics",
-          "contentDetails"
-        ],
-        mine: true
-      });
+    if (
+      channelResponse.data.items &&
+      channelResponse.data.items.length > 0
+    ) {
 
-      if (
-        channelResponse.data.items &&
-        channelResponse.data.items.length > 0
-      ) {
-        channelData = channelResponse.data.items[0];
-      }
+      const channel = channelResponse.data.items[0];
 
-    } catch (youtubeError) {
-      console.error(
-        "YouTube Channel Error:",
-        youtubeError.message
-      );
+      channelData = {
+        id: channel.id,
+
+        title: channel.snippet?.title || "Unknown Channel",
+
+        description:
+          channel.snippet?.description || "",
+
+        thumbnail:
+          channel.snippet?.thumbnails?.high?.url ||
+          channel.snippet?.thumbnails?.medium?.url ||
+          channel.snippet?.thumbnails?.default?.url ||
+          "",
+
+        subscribers:
+          channel.statistics?.subscriberCount || "0",
+
+        videos:
+          channel.statistics?.videoCount || "0",
+
+        views:
+          channel.statistics?.viewCount || "0"
+      };
+
     }
 
     // ==========================================
-    // SAVE CONNECTED ACCOUNT
+    // SAVE CONNECTED USER
     // ==========================================
 
-    const account = {
-      id: userInfo.data.id,
-
-      email: userInfo.data.email,
-
-      name: userInfo.data.name,
-
-      picture: userInfo.data.picture,
+    connectedUser = {
+      connected: true,
 
       connectedAt: new Date().toISOString(),
 
-      tokens: {
-        access_token: tokens.access_token,
+      tokens: tokens,
 
-        refresh_token: tokens.refresh_token,
-
-        expiry_date: tokens.expiry_date
-      },
-
-      youtubeChannel: channelData
-        ? {
-            id: channelData.id,
-
-            title: channelData.snippet.title,
-
-            description:
-              channelData.snippet.description,
-
-            subscribers:
-              channelData.statistics.subscriberCount,
-
-            videos:
-              channelData.statistics.videoCount,
-
-            views:
-              channelData.statistics.viewCount
-          }
-        : null
+      channel: channelData
     };
 
-    // पुराने account को हटाकर नया update करें
-    connectedYouTubeAccounts =
-      connectedYouTubeAccounts.filter(
-        item => item.email !== account.email
-      );
-
-    connectedYouTubeAccounts.push(account);
-
-    console.log(
-      "Google / YouTube Account Connected:",
-      account.email
-    );
+    console.log("=================================");
+    console.log("GOOGLE ACCOUNT CONNECTED");
+    console.log("CHANNEL:", channelData?.title);
+    console.log("=================================");
 
     // ==========================================
     // SUCCESS PAGE
     // ==========================================
 
+    const channelName =
+      channelData?.title || "Google Account";
+
+    const channelImage =
+      channelData?.thumbnail || "";
+
     res.send(`
       <!DOCTYPE html>
+
       <html>
+
       <head>
-        <title>FLIZSTREAM - Connected</title>
+
+        <title>FLIZSTREAM Connected</title>
 
         <meta name="viewport"
               content="width=device-width, initial-scale=1">
 
         <style>
+
           * {
             box-sizing: border-box;
           }
 
           body {
             margin: 0;
+
             min-height: 100vh;
+
+            background:
+              linear-gradient(
+                135deg,
+                #111827,
+                #0f172a
+              );
+
+            font-family:
+              Arial,
+              sans-serif;
+
             display: flex;
-            justify-content: center;
+
             align-items: center;
-            font-family: Arial, sans-serif;
-            background: #111827;
+
+            justify-content: center;
+
             color: white;
           }
 
           .card {
+
             width: 90%;
-            max-width: 450px;
-            padding: 30px;
-            border-radius: 20px;
+
+            max-width: 600px;
+
             background: #1f2937;
+
+            padding: 50px 30px;
+
+            border-radius: 25px;
+
             text-align: center;
+
             box-shadow:
-              0 10px 40px rgba(0,0,0,.5);
+              0 20px 60px
+              rgba(0,0,0,.4);
+
           }
 
           .success {
-            font-size: 60px;
+
+            font-size: 70px;
+
+            margin-bottom: 20px;
+
           }
 
           h1 {
-            color: #22c55e;
+
+            color: #4ade80;
+
+            font-size: 38px;
+
+            margin-bottom: 25px;
+
           }
 
-          p {
-            color: #d1d5db;
-            line-height: 1.6;
-          }
+          .profile {
 
-          img {
-            width: 70px;
-            height: 70px;
+            width: 100px;
+
+            height: 100px;
+
             border-radius: 50%;
-            margin: 10px;
+
+            object-fit: cover;
+
+            margin: 20px auto;
+
+            border:
+              4px solid
+              #4ade80;
+
           }
 
           .channel {
-            margin-top: 20px;
-            padding: 15px;
-            background: #111827;
-            border-radius: 12px;
+
+            font-size: 25px;
+
+            font-weight: bold;
+
+            margin: 15px;
+
+          }
+
+          .email {
+
+            color: #cbd5e1;
+
+            font-size: 17px;
+
+            word-break: break-all;
+
+          }
+
+          .message {
+
+            color: #cbd5e1;
+
+            font-size: 18px;
+
+            margin-top: 30px;
+
           }
 
           button {
-            margin-top: 20px;
-            padding: 14px 25px;
-            border: none;
-            border-radius: 10px;
-            background: #ef4444;
+
+            margin-top: 35px;
+
+            background:
+              linear-gradient(
+                135deg,
+                #ef4444,
+                #dc2626
+              );
+
             color: white;
-            font-size: 16px;
+
+            border: none;
+
+            padding:
+              16px 40px;
+
+            font-size: 18px;
+
+            border-radius: 15px;
+
             cursor: pointer;
+
           }
+
         </style>
 
       </head>
@@ -333,49 +457,30 @@ app.get("/auth/google/callback", async (req, res) => {
 
         <div class="card">
 
-          <div class="success">✅</div>
+          <div class="success">
+            ✅
+          </div>
 
-          <h1>Successfully Connected!</h1>
+          <h1>
+            Successfully Connected!
+          </h1>
 
           ${
-            account.picture
-              ? `<img src="${account.picture}" alt="Profile">`
+            channelImage
+              ? `<img
+                   class="profile"
+                   src="${channelImage}"
+                   alt="Channel">`
               : ""
           }
 
-          <p>
-            <strong>${account.name || "Google User"}</strong>
-          </p>
+          <div class="channel">
+            ${channelName}
+          </div>
 
-          <p>${account.email || ""}</p>
-
-          ${
-            account.youtubeChannel
-              ? `
-                <div class="channel">
-
-                  <h3>
-                    📺 ${account.youtubeChannel.title}
-                  </h3>
-
-                  <p>
-                    Subscribers:
-                    ${account.youtubeChannel.subscribers}
-                  </p>
-
-                  <p>
-                    Videos:
-                    ${account.youtubeChannel.videos}
-                  </p>
-
-                </div>
-              `
-              : `
-                <p>
-                  Google account connected successfully.
-                </p>
-              `
-          }
+          <div class="message">
+            Google / YouTube account connected successfully.
+          </div>
 
           <button onclick="window.close()">
             Close
@@ -384,59 +489,203 @@ app.get("/auth/google/callback", async (req, res) => {
         </div>
 
       </body>
+
       </html>
     `);
 
   } catch (error) {
 
     console.error(
-      "Google Callback Error:",
-      error
+      "OAuth Callback Error:",
+      error.response?.data || error.message
     );
 
     res.status(500).json({
+
       success: false,
-      message: "Google authentication failed",
-      error: error.message
+
+      message:
+        "Google authentication failed",
+
+      error:
+        error.response?.data?.error?.message ||
+        error.message
+
     });
+
   }
+
 });
 
 // ==========================================
-// पुराने YouTube CALLBACK को भी support करें
+// GET CONNECTED ACCOUNT
 // ==========================================
 
-app.get("/auth/youtube/callback", async (req, res) => {
-  res.redirect(
-    "/auth/google/callback?" +
-    new URLSearchParams(req.query).toString()
-  );
-});
+app.get("/api/account", (req, res) => {
 
-// ==========================================
-// GET CONNECTED ACCOUNTS
-// ==========================================
+  if (!connectedUser) {
 
-app.get("/api/accounts", (req, res) => {
-  const safeAccounts =
-    connectedYouTubeAccounts.map(account => ({
-      id: account.id,
-      email: account.email,
-      name: account.name,
-      picture: account.picture,
-      connectedAt: account.connectedAt,
-      youtubeChannel: account.youtubeChannel
-    }));
+    return res.status(401).json({
+      success: false,
+      connected: false,
+      message: "No Google account connected"
+    });
+
+  }
 
   res.json({
+
     success: true,
-    count: safeAccounts.length,
-    accounts: safeAccounts
+
+    connected: true,
+
+    connectedAt:
+      connectedUser.connectedAt,
+
+    channel:
+      connectedUser.channel
+
   });
+
 });
 
 // ==========================================
-// CREATE STREAM
+// GET CONNECTED YOUTUBE CHANNEL
+// ==========================================
+
+app.get("/api/youtube/channel", async (req, res) => {
+
+  try {
+
+    if (!connectedUser) {
+
+      return res.status(401).json({
+        success: false,
+        message:
+          "Please connect your Google account first",
+        loginUrl:
+          "/auth/youtube"
+      });
+
+    }
+
+    const youtube = google.youtube({
+      version: "v3",
+      auth: oauth2Client
+    });
+
+    const response =
+      await youtube.channels.list({
+
+        part: [
+          "snippet",
+          "statistics",
+          "status"
+        ],
+
+        mine: true
+
+      });
+
+    if (
+      !response.data.items ||
+      response.data.items.length === 0
+    ) {
+
+      return res.status(404).json({
+
+        success: false,
+
+        message:
+          "No YouTube channel found for this Google account"
+
+      });
+
+    }
+
+    const channel =
+      response.data.items[0];
+
+    res.json({
+
+      success: true,
+
+      message:
+        "YouTube channel connected successfully",
+
+      channel: {
+
+        id: channel.id,
+
+        title:
+          channel.snippet?.title,
+
+        description:
+          channel.snippet?.description,
+
+        thumbnail:
+          channel.snippet?.thumbnails?.high?.url ||
+          channel.snippet?.thumbnails?.medium?.url ||
+          channel.snippet?.thumbnails?.default?.url,
+
+        subscribers:
+          channel.statistics?.subscriberCount,
+
+        videos:
+          channel.statistics?.videoCount,
+
+        views:
+          channel.statistics?.viewCount
+
+      }
+
+    });
+
+  } catch (error) {
+
+    console.error(
+      "YouTube Channel Error:",
+      error.response?.data || error.message
+    );
+
+    res.status(500).json({
+
+      success: false,
+
+      message:
+        "Unable to get YouTube channel",
+
+      error:
+        error.response?.data?.error?.message ||
+        error.message
+
+    });
+
+  }
+
+});
+
+// ==========================================
+// STREAM STORAGE API
+// ==========================================
+
+app.get("/api/streams", (req, res) => {
+
+  res.json({
+
+    success: true,
+
+    totalStreams:
+      streams.length,
+
+    streams: streams
+
+  });
+
+});
+
+// ==========================================
+// CREATE DEMO STREAM
 // ==========================================
 
 app.post("/api/streams", (req, res) => {
@@ -448,14 +697,22 @@ app.post("/api/streams", (req, res) => {
   } = req.body;
 
   if (!title) {
+
     return res.status(400).json({
+
       success: false,
-      message: "Stream title is required"
+
+      message:
+        "Stream title is required"
+
     });
+
   }
 
   const stream = {
-    id: Date.now().toString(),
+
+    id:
+      Date.now().toString(),
 
     title,
 
@@ -463,87 +720,27 @@ app.post("/api/streams", (req, res) => {
       description || "",
 
     privacyStatus:
-      privacyStatus || "public",
+      privacyStatus || "private",
 
-    status: "created",
+    status:
+      "created",
 
     createdAt:
       new Date().toISOString()
+
   };
 
   streams.push(stream);
 
   res.status(201).json({
+
     success: true,
-    message: "Stream created successfully",
+
+    message:
+      "Demo stream created successfully",
+
     stream
-  });
-});
 
-// ==========================================
-// GET ALL STREAMS
-// ==========================================
-
-app.get("/api/streams", (req, res) => {
-
-  res.json({
-    success: true,
-    count: streams.length,
-    streams
-  });
-
-});
-
-// ==========================================
-// GET SINGLE STREAM
-// ==========================================
-
-app.get("/api/streams/:id", (req, res) => {
-
-  const stream =
-    streams.find(
-      item => item.id === req.params.id
-    );
-
-  if (!stream) {
-    return res.status(404).json({
-      success: false,
-      message: "Stream not found"
-    });
-  }
-
-  res.json({
-    success: true,
-    stream
-  });
-
-});
-
-// ==========================================
-// DELETE STREAM
-// ==========================================
-
-app.delete("/api/streams/:id", (req, res) => {
-
-  const index =
-    streams.findIndex(
-      item => item.id === req.params.id
-    );
-
-  if (index === -1) {
-    return res.status(404).json({
-      success: false,
-      message: "Stream not found"
-    });
-  }
-
-  const deletedStream =
-    streams.splice(index, 1);
-
-  res.json({
-    success: true,
-    message: "Stream deleted successfully",
-    stream: deletedStream[0]
   });
 
 });
@@ -552,14 +749,13 @@ app.delete("/api/streams/:id", (req, res) => {
 // START SERVER
 // ==========================================
 
+const PORT =
+  process.env.PORT || 3000;
+
 app.listen(PORT, () => {
 
   console.log(
     `FLIZSTREAM API running on port ${PORT}`
-  );
-
-  console.log(
-    `Redirect URI: ${REDIRECT_URI}`
   );
 
 });
