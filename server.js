@@ -4,16 +4,16 @@ const { google } = require("googleapis");
 
 const app = express();
 
-// ==========================================
+// =====================================================
 // MIDDLEWARE
-// ==========================================
+// =====================================================
 
 app.use(cors());
 app.use(express.json());
 
-// ==========================================
-// GOOGLE / YOUTUBE OAUTH CONFIGURATION
-// ==========================================
+// =====================================================
+// GOOGLE OAUTH CONFIGURATION
+// =====================================================
 
 const CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
 const CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
@@ -28,51 +28,57 @@ const oauth2Client = new google.auth.OAuth2(
   REDIRECT_URI
 );
 
-// ==========================================
-// TEMPORARY STORAGE
+// =====================================================
+// TEMPORARY MEMORY STORAGE
+// =====================================================
+
 // NOTE:
-// Render restart होने पर यह memory reset हो सकती है.
-// बाद में Database जोड़ेंगे.
-// ==========================================
+// यह अभी testing/demo के लिए है.
+// Render restart होने पर data reset हो सकता है.
 
 let connectedUser = null;
+
 let streams = [];
 
-// ==========================================
-// HOME API
-// ==========================================
+// =====================================================
+// HOME
+// =====================================================
 
 app.get("/", (req, res) => {
   res.json({
     success: true,
     message: "FLIZSTREAM API is running successfully!",
     app: "FLIZSTREAM",
-    version: "1.0.0",
+    version: "2.0.0",
+
     endpoints: {
       status: "/api/status",
       googleLogin: "/auth/youtube",
-      youtubeChannel: "/api/youtube/channel",
-      connectedAccount: "/api/account"
+      account: "/api/account",
+      channel: "/api/youtube/channel",
+      createLive: "/api/youtube/live/create",
+      streams: "/api/streams"
     }
   });
 });
 
-// ==========================================
+// =====================================================
 // API STATUS
-// ==========================================
+// =====================================================
 
 app.get("/api/status", (req, res) => {
   res.json({
     success: true,
     status: "online",
-    message: "FLIZSTREAM Streaming API is working",
-    googleConnected: connectedUser !== null
+    message: "FLIZSTREAM API is working",
+    googleConnected: connectedUser !== null,
+    timestamp: new Date().toISOString()
   });
 });
 
-// ==========================================
+// =====================================================
 // GOOGLE / YOUTUBE LOGIN
-// ==========================================
+// =====================================================
 
 app.get("/auth/youtube", (req, res) => {
   try {
@@ -81,7 +87,8 @@ app.get("/auth/youtube", (req, res) => {
       return res.status(500).json({
         success: false,
         message: "Google OAuth environment variables are missing",
-        requiredVariables: [
+
+        required: [
           "GOOGLE_CLIENT_ID",
           "GOOGLE_CLIENT_SECRET"
         ]
@@ -95,8 +102,11 @@ app.get("/auth/youtube", (req, res) => {
       prompt: "consent",
 
       scope: [
+
         "https://www.googleapis.com/auth/youtube",
+
         "https://www.googleapis.com/auth/youtube.force-ssl"
+
       ]
 
     });
@@ -105,20 +115,20 @@ app.get("/auth/youtube", (req, res) => {
 
   } catch (error) {
 
-    console.error("Google Login Error:", error);
+    console.error("GOOGLE LOGIN ERROR:", error);
 
     res.status(500).json({
       success: false,
-      message: "Unable to start YouTube authentication",
+      message: "Unable to start Google authentication",
       error: error.message
     });
 
   }
 });
 
-// ==========================================
+// =====================================================
 // GOOGLE / YOUTUBE CALLBACK
-// ==========================================
+// =====================================================
 
 app.get("/auth/youtube/callback", async (req, res) => {
 
@@ -128,34 +138,56 @@ app.get("/auth/youtube/callback", async (req, res) => {
 
     const googleError = req.query.error;
 
-    // User denied permission
+    // =================================================
+    // USER CANCELLED LOGIN
+    // =================================================
+
     if (googleError) {
 
       return res.status(400).send(`
         <!DOCTYPE html>
+
         <html>
+
         <head>
+
+          <meta name="viewport"
+          content="width=device-width, initial-scale=1">
+
           <title>Authentication Failed</title>
 
           <style>
+
+            * {
+              box-sizing: border-box;
+            }
+
             body {
               margin: 0;
-              background: #111827;
-              color: white;
-              font-family: Arial, sans-serif;
+              min-height: 100vh;
+
               display: flex;
               justify-content: center;
               align-items: center;
-              min-height: 100vh;
+
+              font-family: Arial, sans-serif;
+
+              background: #111827;
+
+              color: white;
             }
 
             .card {
-              background: #1f2937;
-              padding: 40px;
-              border-radius: 20px;
-              text-align: center;
-              max-width: 500px;
               width: 90%;
+              max-width: 500px;
+
+              padding: 40px 25px;
+
+              background: #1f2937;
+
+              border-radius: 25px;
+
+              text-align: center;
             }
 
             h1 {
@@ -163,15 +195,23 @@ app.get("/auth/youtube/callback", async (req, res) => {
             }
 
             button {
-              background: #ef4444;
-              border: none;
-              color: white;
               padding: 14px 30px;
-              border-radius: 10px;
+
+              border: none;
+
+              border-radius: 12px;
+
+              background: #ef4444;
+
+              color: white;
+
               font-size: 16px;
+
               cursor: pointer;
             }
+
           </style>
+
         </head>
 
         <body>
@@ -180,55 +220,72 @@ app.get("/auth/youtube/callback", async (req, res) => {
 
             <h1>❌ Authentication Failed</h1>
 
-            <p>You cancelled or denied Google permission.</p>
-
-            <p>${googleError}</p>
+            <p>You cancelled Google permission.</p>
 
             <br>
 
-            <button onclick="window.location.href='/auth/youtube'">
+            <button
+              onclick="window.location.href='/auth/youtube'"
+            >
               Try Again
             </button>
 
           </div>
 
         </body>
+
         </html>
       `);
 
     }
 
-    // Authorization code missing
+    // =================================================
+    // CHECK AUTHORIZATION CODE
+    // =================================================
+
     if (!code) {
 
       return res.status(400).json({
         success: false,
-        message: "Authorization code not received from Google"
+        message: "Authorization code not received"
       });
 
     }
 
-    // Get Google Tokens
-    const { tokens } = await oauth2Client.getToken(code);
+    // =================================================
+    // GET GOOGLE TOKENS
+    // =================================================
+
+    const { tokens } =
+      await oauth2Client.getToken(code);
 
     oauth2Client.setCredentials(tokens);
 
-    // ==========================================
-    // GET CONNECTED YOUTUBE CHANNEL
-    // ==========================================
+    // =================================================
+    // CREATE YOUTUBE CLIENT
+    // =================================================
 
     const youtube = google.youtube({
       version: "v3",
       auth: oauth2Client
     });
 
-    const channelResponse = await youtube.channels.list({
-      part: [
-        "snippet",
-        "statistics"
-      ],
-      mine: true
-    });
+    // =================================================
+    // GET YOUTUBE CHANNEL
+    // =================================================
+
+    const channelResponse =
+      await youtube.channels.list({
+
+        part: [
+          "snippet",
+          "statistics",
+          "status"
+        ],
+
+        mine: true
+
+      });
 
     let channelData = null;
 
@@ -237,62 +294,83 @@ app.get("/auth/youtube/callback", async (req, res) => {
       channelResponse.data.items.length > 0
     ) {
 
-      const channel = channelResponse.data.items[0];
+      const channel =
+        channelResponse.data.items[0];
 
       channelData = {
+
         id: channel.id,
 
-        title: channel.snippet?.title || "Unknown Channel",
+        title:
+          channel.snippet?.title ||
+          "Unknown Channel",
 
         description:
-          channel.snippet?.description || "",
+          channel.snippet?.description ||
+          "",
 
         thumbnail:
+
           channel.snippet?.thumbnails?.high?.url ||
+
           channel.snippet?.thumbnails?.medium?.url ||
+
           channel.snippet?.thumbnails?.default?.url ||
+
           "",
 
         subscribers:
-          channel.statistics?.subscriberCount || "0",
+          channel.statistics?.subscriberCount ||
+          "0",
 
         videos:
-          channel.statistics?.videoCount || "0",
+          channel.statistics?.videoCount ||
+          "0",
 
         views:
-          channel.statistics?.viewCount || "0"
+          channel.statistics?.viewCount ||
+          "0"
+
       };
 
     }
 
-    // ==========================================
+    // =================================================
     // SAVE CONNECTED USER
-    // ==========================================
+    // =================================================
 
     connectedUser = {
+
       connected: true,
 
-      connectedAt: new Date().toISOString(),
+      connectedAt:
+        new Date().toISOString(),
 
       tokens: tokens,
 
       channel: channelData
+
     };
 
-    console.log("=================================");
+    console.log("==================================");
     console.log("GOOGLE ACCOUNT CONNECTED");
-    console.log("CHANNEL:", channelData?.title);
-    console.log("=================================");
+    console.log(
+      "CHANNEL:",
+      channelData?.title || "No channel found"
+    );
+    console.log("==================================");
 
-    // ==========================================
+    // =================================================
     // SUCCESS PAGE
-    // ==========================================
+    // =================================================
 
     const channelName =
-      channelData?.title || "Google Account";
+      channelData?.title ||
+      "Google Account";
 
     const channelImage =
-      channelData?.thumbnail || "";
+      channelData?.thumbnail ||
+      "";
 
     res.send(`
       <!DOCTYPE html>
@@ -301,10 +379,12 @@ app.get("/auth/youtube/callback", async (req, res) => {
 
       <head>
 
-        <title>FLIZSTREAM Connected</title>
+        <meta
+          name="viewport"
+          content="width=device-width, initial-scale=1"
+        >
 
-        <meta name="viewport"
-              content="width=device-width, initial-scale=1">
+        <title>FLIZSTREAM Connected</title>
 
         <style>
 
@@ -313,9 +393,20 @@ app.get("/auth/youtube/callback", async (req, res) => {
           }
 
           body {
+
             margin: 0;
 
             min-height: 100vh;
+
+            display: flex;
+
+            justify-content: center;
+
+            align-items: center;
+
+            font-family:
+              Arial,
+              sans-serif;
 
             background:
               linear-gradient(
@@ -324,17 +415,8 @@ app.get("/auth/youtube/callback", async (req, res) => {
                 #0f172a
               );
 
-            font-family:
-              Arial,
-              sans-serif;
-
-            display: flex;
-
-            align-items: center;
-
-            justify-content: center;
-
             color: white;
+
           }
 
           .card {
@@ -343,25 +425,23 @@ app.get("/auth/youtube/callback", async (req, res) => {
 
             max-width: 600px;
 
-            background: #1f2937;
-
-            padding: 50px 30px;
-
-            border-radius: 25px;
+            padding: 50px 25px;
 
             text-align: center;
 
+            background: #1f2937;
+
+            border-radius: 25px;
+
             box-shadow:
               0 20px 60px
-              rgba(0,0,0,.4);
+              rgba(0,0,0,0.5);
 
           }
 
-          .success {
+          .icon {
 
             font-size: 70px;
-
-            margin-bottom: 20px;
 
           }
 
@@ -369,9 +449,7 @@ app.get("/auth/youtube/callback", async (req, res) => {
 
             color: #4ade80;
 
-            font-size: 38px;
-
-            margin-bottom: 25px;
+            font-size: 34px;
 
           }
 
@@ -381,15 +459,14 @@ app.get("/auth/youtube/callback", async (req, res) => {
 
             height: 100px;
 
-            border-radius: 50%;
-
             object-fit: cover;
 
-            margin: 20px auto;
+            border-radius: 50%;
 
             border:
-              4px solid
-              #4ade80;
+              4px solid #4ade80;
+
+            margin: 20px auto;
 
           }
 
@@ -399,17 +476,7 @@ app.get("/auth/youtube/callback", async (req, res) => {
 
             font-weight: bold;
 
-            margin: 15px;
-
-          }
-
-          .email {
-
-            color: #cbd5e1;
-
-            font-size: 17px;
-
-            word-break: break-all;
+            margin: 15px 0;
 
           }
 
@@ -419,7 +486,7 @@ app.get("/auth/youtube/callback", async (req, res) => {
 
             font-size: 18px;
 
-            margin-top: 30px;
+            margin-top: 25px;
 
           }
 
@@ -427,23 +494,23 @@ app.get("/auth/youtube/callback", async (req, res) => {
 
             margin-top: 35px;
 
+            padding:
+              16px 45px;
+
+            border: none;
+
+            border-radius: 15px;
+
+            font-size: 18px;
+
+            color: white;
+
             background:
               linear-gradient(
                 135deg,
                 #ef4444,
                 #dc2626
               );
-
-            color: white;
-
-            border: none;
-
-            padding:
-              16px 40px;
-
-            font-size: 18px;
-
-            border-radius: 15px;
 
             cursor: pointer;
 
@@ -457,9 +524,7 @@ app.get("/auth/youtube/callback", async (req, res) => {
 
         <div class="card">
 
-          <div class="success">
-            ✅
-          </div>
+          <div class="icon">✅</div>
 
           <h1>
             Successfully Connected!
@@ -467,10 +532,13 @@ app.get("/auth/youtube/callback", async (req, res) => {
 
           ${
             channelImage
-              ? `<img
-                   class="profile"
-                   src="${channelImage}"
-                   alt="Channel">`
+              ? `
+                <img
+                  class="profile"
+                  src="${channelImage}"
+                  alt="Channel"
+                >
+              `
               : ""
           }
 
@@ -496,7 +564,7 @@ app.get("/auth/youtube/callback", async (req, res) => {
   } catch (error) {
 
     console.error(
-      "OAuth Callback Error:",
+      "OAUTH CALLBACK ERROR:",
       error.response?.data || error.message
     );
 
@@ -517,18 +585,23 @@ app.get("/auth/youtube/callback", async (req, res) => {
 
 });
 
-// ==========================================
+// =====================================================
 // GET CONNECTED ACCOUNT
-// ==========================================
+// =====================================================
 
 app.get("/api/account", (req, res) => {
 
   if (!connectedUser) {
 
     return res.status(401).json({
+
       success: false,
+
       connected: false,
-      message: "No Google account connected"
+
+      message:
+        "No Google account connected"
+
     });
 
   }
@@ -549,9 +622,9 @@ app.get("/api/account", (req, res) => {
 
 });
 
-// ==========================================
+// =====================================================
 // GET CONNECTED YOUTUBE CHANNEL
-// ==========================================
+// =====================================================
 
 app.get("/api/youtube/channel", async (req, res) => {
 
@@ -560,18 +633,25 @@ app.get("/api/youtube/channel", async (req, res) => {
     if (!connectedUser) {
 
       return res.status(401).json({
+
         success: false,
+
         message:
-          "Please connect your Google account first",
+          "Please connect your YouTube account first",
+
         loginUrl:
           "/auth/youtube"
+
       });
 
     }
 
     const youtube = google.youtube({
+
       version: "v3",
+
       auth: oauth2Client
+
     });
 
     const response =
@@ -597,7 +677,7 @@ app.get("/api/youtube/channel", async (req, res) => {
         success: false,
 
         message:
-          "No YouTube channel found for this Google account"
+          "No YouTube channel found"
 
       });
 
@@ -611,7 +691,7 @@ app.get("/api/youtube/channel", async (req, res) => {
       success: true,
 
       message:
-        "YouTube channel connected successfully",
+        "YouTube channel loaded successfully",
 
       channel: {
 
@@ -624,9 +704,14 @@ app.get("/api/youtube/channel", async (req, res) => {
           channel.snippet?.description,
 
         thumbnail:
+
           channel.snippet?.thumbnails?.high?.url ||
+
           channel.snippet?.thumbnails?.medium?.url ||
-          channel.snippet?.thumbnails?.default?.url,
+
+          channel.snippet?.thumbnails?.default?.url ||
+
+          "",
 
         subscribers:
           channel.statistics?.subscriberCount,
@@ -644,7 +729,7 @@ app.get("/api/youtube/channel", async (req, res) => {
   } catch (error) {
 
     console.error(
-      "YouTube Channel Error:",
+      "CHANNEL ERROR:",
       error.response?.data || error.message
     );
 
@@ -665,9 +750,343 @@ app.get("/api/youtube/channel", async (req, res) => {
 
 });
 
-// ==========================================
-// STREAM STORAGE API
-// ==========================================
+// =====================================================
+// CREATE YOUTUBE LIVE
+// =====================================================
+
+app.post(
+  "/api/youtube/live/create",
+  async (req, res) => {
+
+    try {
+
+      // ===============================================
+      // CHECK LOGIN
+      // ===============================================
+
+      if (!connectedUser) {
+
+        return res.status(401).json({
+
+          success: false,
+
+          message:
+            "Please connect your YouTube account first",
+
+          loginUrl:
+            "/auth/youtube"
+
+        });
+
+      }
+
+      // ===============================================
+      // GET REQUEST DATA
+      // ===============================================
+
+      const {
+
+        title,
+
+        description,
+
+        privacyStatus,
+
+        scheduledStartTime
+
+      } = req.body;
+
+      // ===============================================
+      // VALIDATE TITLE
+      // ===============================================
+
+      if (!title) {
+
+        return res.status(400).json({
+
+          success: false,
+
+          message:
+            "Live stream title is required"
+
+        });
+
+      }
+
+      // ===============================================
+      // YOUTUBE CLIENT
+      // ===============================================
+
+      const youtube =
+        google.youtube({
+
+          version: "v3",
+
+          auth: oauth2Client
+
+        });
+
+      // ===============================================
+      // CREATE LIVE BROADCAST
+      // ===============================================
+
+      const startTime =
+
+        scheduledStartTime ||
+
+        new Date(
+          Date.now() + 60000
+        ).toISOString();
+
+      const broadcastResponse =
+
+        await youtube.liveBroadcasts.insert({
+
+          part: [
+            "snippet",
+            "status",
+            "contentDetails"
+          ],
+
+          requestBody: {
+
+            snippet: {
+
+              title: title,
+
+              description:
+                description || "",
+
+              scheduledStartTime:
+                startTime
+
+            },
+
+            status: {
+
+              privacyStatus:
+                privacyStatus || "public"
+
+            },
+
+            contentDetails: {
+
+              enableAutoStart: true,
+
+              enableAutoStop: true,
+
+              enableDvr: true
+
+            }
+
+          }
+
+        });
+
+      const broadcast =
+        broadcastResponse.data;
+
+      // ===============================================
+      // CREATE LIVE STREAM
+      // ===============================================
+
+      const streamResponse =
+
+        await youtube.liveStreams.insert({
+
+          part: [
+            "snippet",
+            "cdn",
+            "status"
+          ],
+
+          requestBody: {
+
+            snippet: {
+
+              title:
+                `${title} - Stream`
+
+            },
+
+            cdn: {
+
+              ingestionType:
+                "rtmp",
+
+              resolution:
+                "variable",
+
+              frameRate:
+                "variable"
+
+            }
+
+          }
+
+        });
+
+      const liveStream =
+        streamResponse.data;
+
+      // ===============================================
+      // BIND BROADCAST + STREAM
+      // ===============================================
+
+      await youtube.liveBroadcasts.bind({
+
+        part: [
+          "id",
+          "snippet",
+          "status",
+          "contentDetails"
+        ],
+
+        id:
+          broadcast.id,
+
+        streamId:
+          liveStream.id
+
+      });
+
+      // ===============================================
+      // GET RTMP INFORMATION
+      // ===============================================
+
+      const ingestionInfo =
+        liveStream.cdn?.ingestionInfo;
+
+      const rtmpUrl =
+        ingestionInfo?.ingestionAddress ||
+        null;
+
+      const streamKey =
+        ingestionInfo?.streamName ||
+        null;
+
+      // ===============================================
+      // CREATE LIVE OBJECT
+      // ===============================================
+
+      const newLive = {
+
+        id:
+          broadcast.id,
+
+        streamId:
+          liveStream.id,
+
+        title:
+          title,
+
+        description:
+          description || "",
+
+        privacyStatus:
+          privacyStatus || "public",
+
+        status:
+          broadcast.status?.lifeCycleStatus,
+
+        scheduledStartTime:
+          broadcast.snippet?.scheduledStartTime,
+
+        rtmpUrl:
+          rtmpUrl,
+
+        streamKey:
+          streamKey,
+
+        watchUrl:
+          `https://www.youtube.com/watch?v=${broadcast.id}`,
+
+        createdAt:
+          new Date().toISOString()
+
+      };
+
+      // ===============================================
+      // SAVE TEMPORARILY
+      // ===============================================
+
+      streams.push(newLive);
+
+      // ===============================================
+      // SUCCESS RESPONSE
+      // ===============================================
+
+      res.status(201).json({
+
+        success: true,
+
+        message:
+          "YouTube Live created successfully!",
+
+        live: {
+
+          broadcastId:
+            broadcast.id,
+
+          streamId:
+            liveStream.id,
+
+          title:
+            title,
+
+          description:
+            description || "",
+
+          privacyStatus:
+            privacyStatus || "public",
+
+          scheduledStartTime:
+            broadcast.snippet?.scheduledStartTime,
+
+          status:
+            broadcast.status?.lifeCycleStatus,
+
+          rtmpUrl:
+            rtmpUrl,
+
+          streamKey:
+            streamKey,
+
+          watchUrl:
+            `https://www.youtube.com/watch?v=${broadcast.id}`
+
+        }
+
+      });
+
+    } catch (error) {
+
+      console.error(
+        "CREATE LIVE ERROR:",
+        error.response?.data || error.message
+      );
+
+      res.status(500).json({
+
+        success: false,
+
+        message:
+          "Unable to create YouTube Live",
+
+        error:
+          error.response?.data?.error?.message ||
+          error.message
+
+      });
+
+    }
+
+  }
+);
+
+// =====================================================
+// GET ALL CREATED STREAMS
+// =====================================================
 
 app.get("/api/streams", (req, res) => {
 
@@ -678,84 +1097,136 @@ app.get("/api/streams", (req, res) => {
     totalStreams:
       streams.length,
 
-    streams: streams
+    streams:
+      streams
 
   });
 
 });
 
-// ==========================================
-// CREATE DEMO STREAM
-// ==========================================
+// =====================================================
+// GET SINGLE STREAM
+// =====================================================
 
-app.post("/api/streams", (req, res) => {
+app.get("/api/streams/:id", (req, res) => {
 
-  const {
-    title,
-    description,
-    privacyStatus
-  } = req.body;
+  const stream =
+    streams.find(
 
-  if (!title) {
+      item =>
+        item.id === req.params.id
 
-    return res.status(400).json({
+    );
+
+  if (!stream) {
+
+    return res.status(404).json({
 
       success: false,
 
       message:
-        "Stream title is required"
+        "Stream not found"
 
     });
 
   }
 
-  const stream = {
-
-    id:
-      Date.now().toString(),
-
-    title,
-
-    description:
-      description || "",
-
-    privacyStatus:
-      privacyStatus || "private",
-
-    status:
-      "created",
-
-    createdAt:
-      new Date().toISOString()
-
-  };
-
-  streams.push(stream);
-
-  res.status(201).json({
+  res.json({
 
     success: true,
 
-    message:
-      "Demo stream created successfully",
-
-    stream
+    stream: stream
 
   });
 
 });
 
-// ==========================================
+// =====================================================
+// DELETE DEMO STREAM FROM MEMORY
+// =====================================================
+
+app.delete(
+  "/api/streams/:id",
+  (req, res) => {
+
+    const index =
+      streams.findIndex(
+
+        item =>
+          item.id === req.params.id
+
+      );
+
+    if (index === -1) {
+
+      return res.status(404).json({
+
+        success: false,
+
+        message:
+          "Stream not found"
+
+      });
+
+    }
+
+    const deletedStream =
+      streams.splice(index, 1);
+
+    res.json({
+
+      success: true,
+
+      message:
+        "Stream removed successfully",
+
+      stream:
+        deletedStream[0]
+
+    });
+
+  }
+);
+
+// =====================================================
+// 404 HANDLER
+// =====================================================
+
+app.use((req, res) => {
+
+  res.status(404).json({
+
+    success: false,
+
+    message:
+      "Route not found",
+
+    path:
+      req.originalUrl
+
+  });
+
+});
+
+// =====================================================
 // START SERVER
-// ==========================================
+// =====================================================
 
 const PORT =
   process.env.PORT || 3000;
 
 app.listen(PORT, () => {
 
+  console.log("==================================");
+
   console.log(
     `FLIZSTREAM API running on port ${PORT}`
   );
+
+  console.log(
+    `Redirect URI: ${REDIRECT_URI}`
+  );
+
+  console.log("==================================");
 
 });
