@@ -755,10 +755,7 @@ app.get("/api/live/status", async (req, res) => {
         part:
         "snippet,status",
 
-        mine: true,
-
-        broadcastStatus:
-        "active"
+        mine: true
 
       });
 
