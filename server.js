@@ -36,8 +36,6 @@ const oauth2Client = new google.auth.OAuth2(
 
 // ===============================
 // CONNECTED ACCOUNT STORAGE
-// NOTE:
-// Render restart hone par memory reset ho sakti hai.
 // ===============================
 
 let connectedAccount = null;
@@ -251,7 +249,6 @@ function successPage(data) {
 
   return `
 <!DOCTYPE html>
-
 <html lang="en">
 
 <head>
@@ -259,8 +256,8 @@ function successPage(data) {
 <meta charset="UTF-8">
 
 <meta
-name="viewport"
-content="width=device-width, initial-scale=1.0">
+  name="viewport"
+  content="width=device-width, initial-scale=1.0">
 
 <title>FLIZSTREAM Connected</title>
 
@@ -450,8 +447,8 @@ ${escapeHtml(data.channelId)}
 </div>
 
 <button
-class="close-btn"
-onclick="window.close();">
+  class="close-btn"
+  onclick="window.close();">
 
 Close
 
@@ -501,6 +498,7 @@ app.get("/api/account", (req, res) => {
 
 app.get("/api/youtube/channel", async (req, res) => {
   try {
+
     if (!connectedAccount?.connected) {
       return res.status(401).json({
         success: false,
@@ -524,6 +522,7 @@ app.get("/api/youtube/channel", async (req, res) => {
     });
 
   } catch (error) {
+
     console.error("CHANNEL DETAILS ERROR:", error);
 
     res.status(500).json({
@@ -539,6 +538,7 @@ app.get("/api/youtube/channel", async (req, res) => {
 // ===============================
 
 app.post("/api/youtube/disconnect", (req, res) => {
+
   connectedAccount = null;
 
   oauth2Client.setCredentials({});
@@ -554,6 +554,7 @@ app.post("/api/youtube/disconnect", (req, res) => {
 // ===============================
 
 app.post("/api/stream/create", async (req, res) => {
+
   try {
 
     if (!connectedAccount?.connected) {
@@ -582,11 +583,13 @@ app.post("/api/stream/create", async (req, res) => {
 
     const broadcastResponse =
       await youtube.liveBroadcasts.insert({
+
         part: "snippet,status,contentDetails",
 
         requestBody: {
 
           snippet: {
+
             title:
               String(title).trim() ||
               "Live Stream from Android",
@@ -599,22 +602,29 @@ app.post("/api/stream/create", async (req, res) => {
           },
 
           status: {
+
             privacyStatus:
               ["public", "unlisted", "private"]
-                .includes(String(privacy).toLowerCase())
+                .includes(
+                  String(privacy).toLowerCase()
+                )
                 ? String(privacy).toLowerCase()
                 : "public"
           },
 
           contentDetails: {
+
             enableAutoStart: true,
+
             enableAutoStop: true
           }
 
         }
+
       });
 
-    const broadcast = broadcastResponse.data;
+    const broadcast =
+      broadcastResponse.data;
 
     if (!broadcast.id) {
       throw new Error(
@@ -653,13 +663,17 @@ app.post("/api/stream/create", async (req, res) => {
         requestBody: {
 
           snippet: {
+
             title:
               `${String(title).trim() || "FLIZSTREEM"} - FLIZSTREEM`
           },
 
           cdn: {
+
             ingestionType: "rtmp",
+
             resolution: validResolution,
+
             frameRate: validFps
           }
 
@@ -667,7 +681,8 @@ app.post("/api/stream/create", async (req, res) => {
 
       });
 
-    const stream = streamResponse.data;
+    const stream =
+      streamResponse.data;
 
     const ingestionInfo =
       stream.cdn?.ingestionInfo;
@@ -710,9 +725,15 @@ app.post("/api/stream/create", async (req, res) => {
     );
 
     console.log({
-      broadcastId: broadcast.id,
-      streamId: stream.id,
+
+      broadcastId:
+        broadcast.id,
+
+      streamId:
+        stream.id,
+
       ingestionAddress
+
     });
 
     // ===============================
@@ -781,13 +802,13 @@ app.post("/api/stream/create", async (req, res) => {
 // ===============================
 
 app.post("/api/stream/:id/start", async (req, res) => {
+
   try {
 
     if (!connectedAccount?.connected) {
       return res.status(401).json({
         success: false,
-        message:
-          "Please connect your YouTube account first"
+        message: "Please connect your YouTube account first"
       });
     }
 
@@ -801,7 +822,23 @@ app.post("/api/stream/:id/start", async (req, res) => {
       req.query.broadcastId ||
       req.params.id;
 
-    const response =
+    if (!broadcastId) {
+      return res.status(400).json({
+        success: false,
+        message: "Broadcast ID is required"
+      });
+    }
+
+    console.log("=================================");
+    console.log("START YOUTUBE BROADCAST");
+    console.log("Broadcast ID:", broadcastId);
+    console.log("=================================");
+
+    // =================================
+    // STEP 1: GET BROADCAST
+    // =================================
+
+    const broadcastResponse =
       await youtube.liveBroadcasts.list({
 
         part:
@@ -813,28 +850,243 @@ app.post("/api/stream/:id/start", async (req, res) => {
       });
 
     const broadcast =
-      response.data.items?.[0];
+      broadcastResponse.data.items?.[0];
 
     if (!broadcast) {
+
       return res.status(404).json({
         success: false,
-        message:
-          "YouTube broadcast not found"
+        message: "YouTube broadcast not found"
       });
+
     }
 
-    res.json({
+    const broadcastStatus =
+      broadcast.status?.lifeCycleStatus ||
+      "unknown";
+
+    const boundStreamId =
+      broadcast.contentDetails?.boundStreamId;
+
+    console.log(
+      "Broadcast Status:",
+      broadcastStatus
+    );
+
+    console.log(
+      "Bound Stream ID:",
+      boundStreamId
+    );
+
+    // =================================
+    // STEP 2: CHECK STREAM BINDING
+    // =================================
+
+    if (!boundStreamId) {
+
+      return res.status(400).json({
+
+        success: false,
+
+        live: false,
+
+        message:
+          "Broadcast is not bound to a YouTube RTMP stream.",
+
+        broadcastId
+
+      });
+
+    }
+
+    // =================================
+    // STEP 3: CHECK YOUTUBE RTMP STATUS
+    // =================================
+
+    const streamResponse =
+      await youtube.liveStreams.list({
+
+        part:
+          "id,status",
+
+        id:
+          boundStreamId
+
+      });
+
+    const stream =
+      streamResponse.data.items?.[0];
+
+    if (!stream) {
+
+      return res.status(404).json({
+
+        success: false,
+
+        live: false,
+
+        message:
+          "Bound YouTube RTMP stream not found.",
+
+        broadcastId,
+
+        streamId:
+          boundStreamId
+
+      });
+
+    }
+
+    const streamStatus =
+      stream.status?.streamStatus ||
+      "unknown";
+
+    const healthStatus =
+      stream.status?.healthStatus?.status ||
+      "unknown";
+
+    console.log(
+      "YouTube RTMP Stream Status:",
+      streamStatus
+    );
+
+    console.log(
+      "YouTube Stream Health:",
+      healthStatus
+    );
+
+    // =================================
+    // STEP 4: RTMP NOT RECEIVING DATA
+    // =================================
+
+    if (streamStatus !== "active") {
+
+      return res.json({
+
+        success: true,
+
+        live: false,
+
+        waitingForRtmp: true,
+
+        message:
+          "YouTube is waiting for RTMP video data from FLIZSTREEM.",
+
+        broadcastId,
+
+        streamId:
+          boundStreamId,
+
+        broadcastStatus,
+
+        streamStatus,
+
+        healthStatus
+
+      });
+
+    }
+
+    // =================================
+    // STEP 5: RTMP IS ACTIVE
+    // =================================
+
+    console.log(
+      "RTMP data is ACTIVE on YouTube."
+    );
+
+    // =================================
+    // STEP 6: TRANSITION TO LIVE
+    // =================================
+
+    if (
+      broadcastStatus !== "live" &&
+      broadcastStatus !== "liveStarting"
+    ) {
+
+      console.log(
+        "Transitioning YouTube broadcast to LIVE..."
+      );
+
+      const transitionResponse =
+        await youtube.liveBroadcasts.transition({
+
+          part:
+            "id,snippet,status",
+
+          id:
+            broadcastId,
+
+          broadcastStatus:
+            "live"
+
+        });
+
+      const newStatus =
+        transitionResponse.data.status
+          ?.lifeCycleStatus ||
+        "unknown";
+
+      console.log(
+        "New Broadcast Status:",
+        newStatus
+      );
+
+      return res.json({
+
+        success: true,
+
+        live:
+          newStatus === "live",
+
+        message:
+          newStatus === "live"
+            ? "YouTube broadcast is now LIVE."
+            : "YouTube broadcast is starting.",
+
+        broadcastId,
+
+        streamId:
+          boundStreamId,
+
+        broadcastStatus:
+          newStatus,
+
+        streamStatus,
+
+        healthStatus
+
+      });
+
+    }
+
+    // =================================
+    // STEP 7: ALREADY LIVE / STARTING
+    // =================================
+
+    return res.json({
 
       success: true,
 
+      live:
+        broadcastStatus === "live" ||
+        broadcastStatus === "liveStarting",
+
       message:
-        "Broadcast ready. Start sending RTMP video from the app.",
+        broadcastStatus === "live"
+          ? "YouTube broadcast is already LIVE."
+          : "YouTube broadcast is starting.",
 
-      broadcastId:
-        broadcast.id,
+      broadcastId,
 
-      status:
-        broadcast.status || null
+      streamId:
+        boundStreamId,
+
+      broadcastStatus,
+
+      streamStatus,
+
+      healthStatus
 
     });
 
@@ -851,9 +1103,16 @@ app.post("/api/stream/:id/start", async (req, res) => {
       error?.message ||
       "Unknown YouTube API error";
 
-    res.status(500).json({
+    console.error(
+      "YouTube Error:",
+      youtubeError
+    );
+
+    return res.status(500).json({
 
       success: false,
+
+      live: false,
 
       message:
         "Failed to start YouTube broadcast",
@@ -862,7 +1121,9 @@ app.post("/api/stream/:id/start", async (req, res) => {
         youtubeError
 
     });
+
   }
+
 });
 
 // ===============================
@@ -870,6 +1131,7 @@ app.post("/api/stream/:id/start", async (req, res) => {
 // ===============================
 
 app.post("/api/stream/:id/stop", async (req, res) => {
+
   try {
 
     if (!connectedAccount?.connected) {
@@ -905,11 +1167,16 @@ app.post("/api/stream/:id/stop", async (req, res) => {
       response.data.items?.[0];
 
     if (!broadcast) {
+
       return res.status(404).json({
+
         success: false,
+
         message:
           "YouTube broadcast not found"
+
       });
+
     }
 
     if (
@@ -939,8 +1206,7 @@ app.post("/api/stream/:id/stop", async (req, res) => {
       message:
         "YouTube broadcast stopped",
 
-      broadcastId:
-        broadcastId
+      broadcastId
 
     });
 
@@ -968,7 +1234,9 @@ app.post("/api/stream/:id/stop", async (req, res) => {
         youtubeError
 
     });
+
   }
+
 });
 
 // ===============================
@@ -982,9 +1250,12 @@ app.get("/api/live/status", async (req, res) => {
     if (!connectedAccount?.connected) {
 
       return res.status(401).json({
+
         success: false,
+
         message:
           "Please connect your YouTube account first"
+
       });
 
     }
@@ -998,7 +1269,7 @@ app.get("/api/live/status", async (req, res) => {
       await youtube.liveBroadcasts.list({
 
         part:
-          "snippet,status",
+          "snippet,status,contentDetails",
 
         mine:
           true
@@ -1149,6 +1420,7 @@ function escapeHtml(text) {
       /'/g,
       "&#039;"
     );
+
 }
 
 // ===============================
